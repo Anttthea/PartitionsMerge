@@ -1,6 +1,7 @@
 #include <iostream>
 #include <queue>
 #include <random>
+#include <pthread.h>
 #include "concurrentqueue/concurrentqueue.h"
 #include "concurrentqueue/blockingconcurrentqueue.h"
 #include "Partition.h"
@@ -40,8 +41,8 @@ void generate_random_partitions(vector<shared_ptr<Partition<int>>> &result) {
     normal_distribution<> num_elements_distribution(num_elements_per_partition, 30);
 
     for (int i = 0; i < num_partitions; i++) {
-        const int num_elements = abs(round(num_elements_distribution(gen))) + 1;
-        const int num_blocks = abs(round(num_blocks_distribution(gen))) + 1;
+        const int num_elements = abs(num_elements_distribution(gen)) + 1;
+        const int num_blocks = abs(num_blocks_distribution(gen)) + 1;
         result.push_back(move(generate_random_partition(num_elements, num_blocks, i)));
     }
 }
@@ -79,6 +80,97 @@ void merge_k_partitions_single_thread(deque<shared_ptr<Partition<int>>> &partiti
         }
     }
     partitions.front()->mergeBlocks();
+}
+
+
+void merge_k_partitions_recursive(const vector<shared_ptr<Partition<int>>>& partitions, const int start, const int end, int& result_index) {
+    if (end < start) {
+        return;
+    }
+    if (start == end) {
+        partitions[start]->mergeBlocks();
+        result_index = start;
+        return;
+    }
+
+    int left_start = start;
+    int left_end = start + (end - start) / 2;
+    int right_start = left_end + 1;
+    int right_end = end;
+    int left_index;
+    int right_index;
+    merge_k_partitions_recursive(partitions, left_start, left_end, left_index);
+    merge_k_partitions_recursive(partitions, right_start, right_end, right_index);
+
+    partitions[left_index]->merge(partitions[right_index]);
+    result_index = left_index;
+}
+
+vector<shared_ptr<Partition<int>>> partitions_pthread;
+void initialize_partitions_pthread(const vector<shared_ptr<Partition<int>>>& partitions){
+    for (const shared_ptr<Partition<int>> &item_ptr: partitions) {
+        shared_ptr<Partition<int>> item_copy = make_shared<Partition<int>>(*item_ptr);
+        partitions_pthread.push_back(item_copy);
+    }
+}
+
+typedef struct Arg {
+    int start;
+    int end;
+    int result_index;
+} PartitionsSlice;
+
+void * merge_k_partitions_pthread(void *arg) {
+    PartitionsSlice *slice = (PartitionsSlice *)arg;
+    int start = slice->start;
+    int end = slice->end;
+    if (end < start) {
+        pthread_exit(NULL);
+    }
+    if (start == end) {
+        partitions_pthread[start]->mergeBlocks();
+        slice->result_index = start;
+        pthread_exit(NULL);
+    }
+
+    int left_start = start;
+    int left_end = start + (end - start) / 2;
+    int right_start = left_end + 1;
+    int right_end = end;
+    PartitionsSlice left_slice, right_slice;
+    left_slice.start = left_start;
+    left_slice.end = left_end;
+    right_slice.start = right_start;
+    right_slice.end = right_end;
+    pthread_t thread[2];
+    pthread_create(&thread[0], NULL, merge_k_partitions_pthread, &left_slice);
+    pthread_create(&thread[1], NULL, merge_k_partitions_pthread, &right_slice);
+    pthread_join(thread[0], NULL);
+    pthread_join(thread[1], NULL);
+    int left_index = left_slice.result_index;
+    int right_index = right_slice.result_index;
+
+
+    partitions_pthread[left_index]->merge(partitions_pthread[right_index]);
+    slice->result_index = left_index;
+
+    pthread_join(thread[0], NULL);
+}
+
+void merge_k_partitions_multithread(vector<shared_ptr<Partition<int>>> &partitions) {
+    initialize_partitions_pthread(partitions);
+    PartitionsSlice p_slice;
+    p_slice.start = 0;
+    p_slice.end = partitions.size() - 1;
+    pthread_t thread;
+
+    pthread_create(&thread, NULL, merge_k_partitions_pthread, &p_slice);
+    pthread_join(thread, NULL);
+
+    int result_index = p_slice.result_index;
+    shared_ptr<Partition<int>> result_partition = move(partitions_pthread[result_index]);
+    partitions.clear();
+    partitions.push_back(result_partition);
 }
 
 // thread-safe
@@ -160,16 +252,22 @@ void merge_k_partitions_producer_consumer(vector<shared_ptr<Partition<int>>> &pa
 
     partitions.clear();
     partitions.push_back(result);
-
 }
 
 int main() {
     vector<shared_ptr<Partition<int>>> partitions;
     generate_random_partitions(partitions);
+    cout << "Input partitions:" << "\n";
+    print_partitions(partitions);
     deque<shared_ptr<Partition<int>>> partitions_deque;
     for (const shared_ptr<Partition<int>> &item_ptr: partitions) {
         shared_ptr<Partition<int>> item_copy = make_shared<Partition<int>>(*item_ptr);
         partitions_deque.push_back(item_copy);
+    }
+    vector<shared_ptr<Partition<int>>> partitions_copy;
+    for (const shared_ptr<Partition<int>> &item_ptr: partitions) {
+        shared_ptr<Partition<int>> item_copy = make_shared<Partition<int>>(*item_ptr);
+        partitions_copy.push_back(item_copy);
     }
 
     merge_k_partitions_single_thread(partitions_deque);
@@ -177,7 +275,18 @@ int main() {
     print_partitions(partitions_deque);
 
     merge_k_partitions_producer_consumer(partitions);
-    cout << "Result of multi-threaded partitions merge:";
+    cout << "Result of producer consumer partitions merge:" << "\n";
     print_partitions(partitions);
+    int result_index;
+    merge_k_partitions_recursive(partitions_copy, 0, partitions_copy.size() - 1, result_index);
+    shared_ptr<Partition<int>> result_partition = move(partitions_copy[result_index]);
+    partitions_copy.clear();
+    partitions_copy.push_back(result_partition);
+    cout << "Result of recursive partitions merge:" << "\n";
+    print_partitions(partitions_copy);
+    merge_k_partitions_multithread(partitions);
+    cout << "Result of pthread partitions merge:" << "\n";
+    print_partitions(partitions);
+
     return 0;
 }
