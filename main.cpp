@@ -269,6 +269,11 @@ int main() {
         shared_ptr<Partition<int>> item_copy = make_shared<Partition<int>>(*item_ptr);
         partitions_copy.push_back(item_copy);
     }
+    vector<shared_ptr<Partition<int>>> partitions_second_copy;
+    for (const shared_ptr<Partition<int>> &item_ptr: partitions) {
+        shared_ptr<Partition<int>> item_copy = make_shared<Partition<int>>(*item_ptr);
+        partitions_second_copy.push_back(item_copy);
+    }
 
     merge_k_partitions_single_thread(partitions_deque);
     cout << "Result of single-threaded partitions merge:";
@@ -284,9 +289,9 @@ int main() {
     partitions_copy.push_back(result_partition);
     cout << "Result of recursive partitions merge:" << "\n";
     print_partitions(partitions_copy);
-    merge_k_partitions_multithread(partitions);
+    merge_k_partitions_multithread(partitions_second_copy);
     cout << "Result of pthread partitions merge:" << "\n";
-    print_partitions(partitions);
+    print_partitions(partitions_second_copy);
 
     return 0;
 }
